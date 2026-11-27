@@ -324,3 +324,18 @@ table.mini tr.on td { background: var(--hl); font-weight: 700; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 10px 0 4px; color: var(--muted); }
 .legend .dot.prev { border: 1px dashed var(--muted); background: var(--card); }
 canvas.plot { max-width: 100%; }
+/* 중학 준비 단계 */
+.prep-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 8px; }
+.prep-lbl { font-size: 12px; color: var(--muted); font-weight: 700; margin-right: 2px; width: 100%; }
+.prep-chip { display: inline-flex; gap: 4px; align-items: baseline; background: var(--card); border: 1px dashed var(--muted); border-radius: 999px; padding: 4px 11px; font-size: 13px; color: var(--text); }
+.prep-chip small { color: var(--muted); font-size: 11px; }
+.prep-chip.done { border-style: solid; border-color: var(--good); color: var(--good); }
+.prep-hint { margin-top: 12px; padding: 8px 12px; border: 1px dashed var(--muted); border-radius: 10px; }
+.grows { border-top: 3px solid var(--good); }
+.seg .chk { display: flex; gap: 6px; align-items: flex-start; width: 100%; font-size: 14px; }
+.seg .chk input { width: 18px; height: 18px; margin-top: 3px; flex: none; }
+.wg > .btn { margin-top: 6px; }
+@media (max-width: 420px) {
+  .mdisp .katex-display > .katex, .formula .katex-display > .katex { font-size: .97em; }
+  .ro-eq .katex-display { font-size: .86em; }
+}

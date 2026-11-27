@@ -62,6 +62,18 @@
     if (!unitCache.has(id)) unitCache.set(id, await getJSON(`data/units/${encodeURIComponent(id)}.json`));
     return unitCache.get(id);
   }
+  // 중학 준비 단계 카드 (data/prep.json)
+  let prep = null;
+  async function loadPrep() {
+    if (!prep) prep = bundle ? (bundle.prep || { cards: [] }) : await getJSON("data/prep.json").catch(() => ({ cards: [] }));
+    return prep;
+  }
+  const PREP_STORE = "math1.prep.v1";   // { 카드id: 확인 문제를 다 펼쳐 본 날 }
+  const prepSeen = (() => {
+    let d = {};
+    try { d = JSON.parse(store.get(PREP_STORE) || "{}") || {}; } catch { d = {}; }
+    return { get: (id) => d[id], put(id) { d[id] = new Date().toISOString().slice(0, 10); store.set(PREP_STORE, JSON.stringify(d)); } };
+  })();
   const allUnits = (idx) => idx.chapters.flatMap((ch) => ch.units.map((u) => ({ ...u, chapter: ch })));
 
   // ---------- 설명 기록 (이 기기) ----------
@@ -168,6 +180,7 @@
       const full = await loadUnit(u.id);
       u.explainIds = (full.explain || []).map((e) => e.id);
     }
+    const pc = (await loadPrep()).cards || [];
     view.innerHTML = `
       <section class="hero">
         <h2 style="margin:0">수학Ⅰ 개념 노트</h2>
@@ -179,7 +192,13 @@
         <span class="muted">마지막에 '설명해 보기'에서 친구에게 설명하듯 적어 보고, 모범 설명과 비교합니다.</span>
       </div>
       ${idx.chapters.map((ch) => `<div class="group-title">${esc(ch.no)}. ${esc(ch.title)}</div>
+        ${prepRow(pc.filter((c) => c.chapter === ch.id))}
         <div class="cat-list">${ch.units.map((x) => unitRow(units.find((u) => u.id === x.id))).join("")}</div>`).join("")}`;
+  }
+  function prepRow(cards) {
+    if (!cards.length) return "";
+    return `<div class="prep-row"><span class="prep-lbl">준비 단계 · 중학 개념</span>
+      ${cards.map((c) => `<a class="prep-chip${prepSeen.get(c.id) ? " done" : ""}" href="#/p/${esc(c.id)}">${prepSeen.get(c.id) ? "✓ " : ""}${esc(c.title)}<small>${esc(c.grade || "")}</small></a>`).join("")}</div>`;
   }
   function unitRow(u) {
     if (u.status !== "ready") {
@@ -231,6 +250,10 @@
     const sel = view.querySelector(".tabs [aria-selected=true]");
     if (sel) sel.scrollIntoView({ block: "nearest", inline: "center" });
     const body = $("#tabBody");
+    if (tab === "why") {
+      const pcs = ((await loadPrep()).cards || []).filter((c) => (c.units || []).includes(id));
+      if (pcs.length) body.insertAdjacentHTML("beforebegin", `<div class="prep-hint small">🧩 먼저 확인할 중학 개념: ${pcs.map((c) => `<a href="#/p/${esc(c.id)}">${esc(c.title)}</a>`).join(" · ")}</div>`);
+    }
     ({ why: tabWhy, history: tabHistory, uses: tabUses, roots: tabRoots, pitfalls: tabPitfalls, explain: tabExplain, map: tabMap })[tab](u, body);
   }
   function nextUnitBtn(units, id) {
@@ -378,9 +401,10 @@
       body.querySelectorAll(".cnode").forEach((x) => x.classList.toggle("sel", x === b));
       body.querySelectorAll(".cmap-lines line").forEach((ln) => ln.classList.toggle("hl", ln.dataset.e.split("|").includes(n.id)));
       const goto = n.unit && n.unit !== u.id ? `<a class="btn small" style="margin-top:8px" href="#/u/${esc(n.unit)}">${esc(n.unitLabel || "그 단원으로")} →</a>` : "";
+      const pv = n.prep ? `<a class="btn ghost small" style="margin-top:8px" href="#/p/${esc(n.prep)}">중학 개념 다시 보기 →</a>` : "";
       const root = n.root ? `<a class="btn ghost small" style="margin-top:8px" href="#/u/${esc(u.id)}/roots" data-scroll="${esc(n.root)}">개념 설명 보기 →</a>` : "";
       info.classList.remove("muted");
-      info.innerHTML = `<b>${fmt(n.label)}</b> <span class="pill ${n.kind === "core" ? "" : "gray"}">${kinds[n.kind]}</span><div style="margin-top:6px">${fmt(n.desc || "")}</div>${root} ${goto}`;
+      info.innerHTML = `<b>${fmt(n.label)}</b> <span class="pill ${n.kind === "core" ? "" : "gray"}">${kinds[n.kind]}</span><div style="margin-top:6px">${fmt(n.desc || "")}</div>${root} ${pv} ${goto}`;
     }));
   }
 
@@ -695,7 +719,429 @@
       };
       base.on(draw); sk.on(draw); draw();
     },
+    // 직각삼각형: 크기를 바꿔도 각이 같으면 변의 비는 그대로 (닮음)
+    "trig-ratio"(el, cfg) {
+      wgHead(el, cfg.title || "크기를 바꿔도 비는 그대로", "각 A 를 고정하고 크기만 바꿔 보세요. 세 변의 길이는 바뀌어도 비(sin, cos, tan)는 바뀌지 않습니다.");
+      const cv = document.createElement("canvas"); cv.className = "plot"; el.appendChild(cv);
+      const sA = slider(el, { label: "각 A", min: 5, max: 85, step: 1, value: cfg.angle || 30, show: (v) => `${v}°` });
+      const sS = slider(el, { label: "크기", min: 2, max: 10, step: 0.5, value: 6, show: (v) => `빗변 ${v}` });
+      const box = readout(el);
+      const draw = () => {
+        const w = Math.min(innerW(cv.parentElement) || 320, 640), h = Math.round(w * 0.62), dpr = window.devicePixelRatio || 1;
+        cv.width = w * dpr; cv.height = h * dpr; cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+        const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+        const A = (sA.get() * Math.PI) / 180, hyp = sS.get();
+        const unit = Math.min((w - 40) / 10, (h - 30) / 10);
+        const ax = 20, ay = h - 16;
+        const bx = ax + hyp * Math.cos(A) * unit, by = ay - hyp * Math.sin(A) * unit;
+        c.fillStyle = cssVar("--accent-soft"); c.strokeStyle = cssVar("--accent"); c.lineWidth = 2;
+        c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, ay); c.lineTo(bx, by); c.closePath(); c.fill(); c.stroke();
+        c.strokeStyle = cssVar("--muted"); c.lineWidth = 1; c.strokeRect(bx - 10, ay - 10, 10, 10);
+        c.beginPath(); c.arc(ax, ay, 22, -A, 0); c.stroke();
+        c.fillStyle = cssVar("--text"); c.font = "600 12px Pretendard, sans-serif";
+        c.fillText("A", ax - 12, ay + 4); c.fillText("C", bx + 4, ay + 4); c.fillText("B", bx + 4, by + 4);
+        const opp = hyp * Math.sin(A), adj = hyp * Math.cos(A);
+        c.fillStyle = cssVar("--bad"); c.fillText(`높이 ${opp.toFixed(2)}`, Math.min(bx + 6, w - 70), (ay + by) / 2);
+        c.fillStyle = cssVar("--good"); c.fillText(`밑변 ${adj.toFixed(2)}`, (ax + bx) / 2 - 24, ay + 14 > h ? ay - 4 : ay + 14);
+        c.fillStyle = cssVar("--accent"); c.fillText(`빗변 ${hyp}`, (ax + bx) / 2 - 40, (ay + by) / 2 - 8);
+        box.innerHTML = `<div class="ro-eq">${tex(`\\begin{gathered}\\sin A = \\tfrac{${opp.toFixed(2)}}{${hyp}} = ${Math.sin(A).toFixed(4)} \\\\ \\cos A = \\tfrac{${adj.toFixed(2)}}{${hyp}} = ${Math.cos(A).toFixed(4)} \\\\ \\tan A = ${Math.tan(A).toFixed(4)}\\end{gathered}`, true)}</div>
+          <div class="small muted">크기 슬라이더를 움직여도 세 값은 그대로입니다. 각이 같은 직각삼각형은 모두 닮음이기 때문입니다.</div>`;
+      };
+      redraw.add(draw);
+      sA.on(draw); sS.on(draw); draw();
+    },
+    // y = a^(x-p) + q : 밑에 따라 증가/감소, 평행이동, 점근선
+    "exp-graph"(el, cfg) {
+      wgHead(el, cfg.title || "$y=a^{x-p}+q$ 움직여 보기", "밑 a 를 1 위아래로 움직여 보고, p · q 로 그래프를 옮겨 보세요. 점선은 점근선입니다.");
+      const P = makePlot(el, { xmin: -4, xmax: 4, ymin: -2, ymax: 8, ratio: 0.8, xstep: 1, ystep: 1, xlabels: [-3, -2, -1, 1, 2, 3], ylabels: [1, 2, 4, 6] });
+      const sa = slider(el, { label: "밑 a", min: 0.2, max: 4, step: 0.1, value: cfg.a || 2, show: (v) => num(v, 1) });
+      const sp = cfg.shift === false ? null : slider(el, { label: "p", min: -3, max: 3, step: 1, value: 0 });
+      const sq = cfg.shift === false ? null : slider(el, { label: "q", min: -2, max: 3, step: 1, value: 0 });
+      const box = readout(el);
+      const draw = () => {
+        const a = sa.get(), p = sp ? sp.get() : 0, q = sq ? sq.get() : 0;
+        P.clear();
+        if (p || q) P.fn((x) => a ** x, cssVar("--line"), 2);
+        P.hline(q, cssVar("--warn"));
+        if (Math.abs(a - 1) < 0.05) P.hline(1 + q, cssVar("--bad"), []);
+        else P.fn((x) => a ** (x - p) + q, cssVar("--accent"), 3);
+        P.dot(p, 1 + q, cssVar("--good"), 5, `(${p}, ${1 + q})`);
+        P.dot(p + 1, a + q, cssVar("--bad"), 4);
+        const kind = Math.abs(a - 1) < 0.05 ? "a = 1 이면 $1^x=1$ 이라 가로선(상수함수)이 됩니다. 그래서 밑은 1이 아니어야 합니다."
+          : a > 1 ? "a > 1: x 가 커질수록 y 가 커집니다 (증가). 오른쪽으로 갈수록 가파르게 올라갑니다."
+            : "0 < a < 1: x 가 커질수록 y 가 작아집니다 (감소). 오른쪽으로 갈수록 점근선에 붙습니다.";
+        box.innerHTML = `<div class="ro-eq">${tex(`y = ${num(a, 1)}^{${p ? `x${p > 0 ? "-" : "+"}${Math.abs(p)}` : "x"}}${q ? (q > 0 ? `+${q}` : q) : ""}`, true)}</div>
+          <div class="small">${fmt(kind)}</div>
+          <div class="small muted">초록 점 $(p,\\ 1+q)$ 은 언제나 지나는 점 ($a^0=1$), 점선 $y=q$ 는 다가가지만 닿지 않는 점근선입니다.</div>`;
+        box.querySelectorAll(".small.muted").forEach((x) => { x.innerHTML = fmt(x.textContent); });
+      };
+      redraw.add(draw);
+      [sa, sp, sq].forEach((s) => s && s.on(draw)); draw();
+    },
+    // 지수함수와 로그함수: y = x 에 대한 대칭 (역함수)
+    "inverse-mirror"(el, cfg) {
+      wgHead(el, cfg.title || "거울 $y=x$", "지수함수 위의 점 $(t, a^t)$ 의 x, y 를 바꾸면 로그함수 위의 점 $(a^t, t)$ 이 됩니다.");
+      const P = makePlot(el, { xmin: -3, xmax: 6, ymin: -3, ymax: 6, ratio: 1, xstep: 1, ystep: 1, xlabels: [-2, 1, 2, 4], ylabels: [-2, 1, 2, 4] });
+      const base = seg(el, [[2, "$a=2$"], [0.5, "$a=\\frac12$"], [3, "$a=3$"]], cfg.a || 2);
+      const st = slider(el, { label: "t", min: -2.5, max: 2.5, step: 0.1, value: 1.5, show: (v) => num(v, 1) });
+      const box = readout(el);
+      const draw = () => {
+        const a = Number(base.get()), t = st.get(), y = a ** t;
+        P.clear();
+        P.fn((x) => x, cssVar("--muted"), 1.2);
+        P.fn((x) => a ** x, cssVar("--accent"), 2.5);
+        P.fn((x) => Math.log(x) / Math.log(a), cssVar("--good"), 2.5, 0.001);
+        const c = P.ctx; c.save(); c.setLineDash([4, 4]); c.strokeStyle = cssVar("--warn"); c.lineWidth = 1.5;
+        c.beginPath(); c.moveTo(P.X(t), P.Y(y)); c.lineTo(P.X(y), P.Y(t)); c.stroke(); c.restore();
+        P.dot(t, y, cssVar("--accent"), 5);
+        P.dot(y, t, cssVar("--good"), 5);
+        P.text("y = x", P.X(4.6), P.Y(5.2), cssVar("--muted"));
+        box.innerHTML = `<div>${tex(`(${num(t, 1)},\\ ${num(y, 3)})`)} <span class="small" style="color:var(--accent)">← 지수함수</span>&nbsp; ↔ &nbsp;${tex(`(${num(y, 3)},\\ ${num(t, 1)})`)} <span class="small" style="color:var(--good)">← 로그함수</span></div>
+          <div class="small muted" style="margin-top:4px">${fmt(`$${num(a, 2)}^{${num(t, 1)}} = ${num(y, 3)}$ 이므로 $\\log_{${num(a, 2)}} ${num(y, 3)} = ${num(t, 1)}$. 같은 관계를 x 와 y 를 바꿔 쓴 것이라 두 그래프는 $y=x$ 에 대해 대칭입니다.`)}</div>`;
+      };
+      redraw.add(draw);
+      base.on(draw); st.on(draw); draw();
+    },
+    // 그래프로 지수 부등식 읽기: 밑이 1보다 작으면 부등호 방향이 바뀐다
+    "ineq-graph"(el, cfg) {
+      wgHead(el, cfg.title || "그래프로 읽는 부등식", "$a^x > k$ 의 해는 곡선이 가로선 $y=k$ 보다 **위에** 있는 x 의 범위입니다.");
+      const P = makePlot(el, { xmin: -4, xmax: 4, ymin: -1, ymax: 9, ratio: 0.75, xstep: 1, ystep: 1, xlabels: [-3, -2, -1, 1, 2, 3], ylabels: [2, 4, 6, 8] });
+      const base = seg(el, [[2, "$a=2$"], [0.5, "$a=\\frac12$"]], cfg.a || 2);
+      const sk = slider(el, { label: "k", min: 0.25, max: 8, step: 0.25, value: 4, show: (v) => num(v, 2) });
+      const box = readout(el);
+      const draw = () => {
+        const a = Number(base.get()), k = sk.get();
+        const x0 = Math.log(k) / Math.log(a);
+        P.clear();
+        const c = P.ctx; c.save(); c.fillStyle = cssVar("--good-soft");
+        const from = a > 1 ? x0 : P.xmin, to = a > 1 ? P.xmax : x0;
+        c.fillRect(P.X(from), 0, P.X(to) - P.X(from), P.h); c.restore();
+        P.hline(k, cssVar("--warn"), []);
+        P.fn((x) => a ** x, cssVar("--accent"), 3);
+        P.vline(x0, cssVar("--good"));
+        P.dot(x0, k, cssVar("--good"), 5, `x = ${num(x0, 2)}`);
+        const sign = a > 1 ? ">" : "<";
+        box.innerHTML = `<div class="ro-eq">${tex(`${a === 2 ? "2" : "\\left(\\tfrac12\\right)"}^x > ${num(k, 2)} \\iff x ${sign} ${a === 2 ? "\\log_2" : "\\log_{\\frac12}"} ${num(k, 2)} = ${num(x0, 2)}`, true)}</div>
+          <div class="small muted">${a > 1 ? "밑이 1보다 크면 증가함수라 '큰 쪽'이 그대로 오른쪽입니다. 부등호 방향 유지." : "밑이 1보다 작으면 감소함수라 곡선이 위에 있는 곳이 왼쪽입니다. 지수끼리 비교할 때 부등호 방향이 바뀝니다."}</div>`;
+      };
+      redraw.add(draw);
+      base.on(draw); sk.on(draw); draw();
+    },
+    // 라디안: 반지름과 같은 길이의 호가 만드는 각 = 1 라디안
+    "radian-arc"(el, cfg) {
+      wgHead(el, cfg.title || "1 라디안 만들기", "반지름 r 만큼의 끈을 원 둘레에 감으면 생기는 각이 1 라디안입니다. 반지름을 바꿔도 그 각은 그대로입니다.");
+      const cv = document.createElement("canvas"); cv.className = "plot"; el.appendChild(cv);
+      const sr = slider(el, { label: "반지름 r", min: 1, max: 3, step: 0.1, value: 2, show: (v) => num(v, 1) });
+      const st = slider(el, { label: "호의 길이", min: 0, max: 6.3, step: 0.05, value: 1, show: (v) => `${num(v, 2)} × r` });
+      const box = readout(el);
+      const draw = () => {
+        const w = Math.min(innerW(cv.parentElement) || 320, 640), h = Math.round(w * 0.72), dpr = window.devicePixelRatio || 1;
+        cv.width = w * dpr; cv.height = h * dpr; cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+        const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+        const r = sr.get(), th = st.get();
+        const R = (Math.min(w, h) / 2 - 16) * (r / 3), cx = w / 2, cy = h / 2;
+        c.strokeStyle = cssVar("--line"); c.lineWidth = 1.5; c.beginPath(); c.arc(cx, cy, R, 0, 7); c.stroke();
+        c.fillStyle = cssVar("--accent-soft"); c.beginPath(); c.moveTo(cx, cy); c.arc(cx, cy, R, 0, -th, true); c.closePath(); c.fill();
+        c.strokeStyle = cssVar("--bad"); c.lineWidth = 4; c.beginPath(); c.arc(cx, cy, R, 0, -th, true); c.stroke();
+        c.strokeStyle = cssVar("--accent"); c.lineWidth = 2;
+        c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + R, cy); c.stroke();
+        c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + R * Math.cos(th), cy - R * Math.sin(th)); c.stroke();
+        c.fillStyle = cssVar("--accent"); c.font = "600 12px Pretendard, sans-serif"; c.fillText("r", cx + R / 2, cy + 14);
+        box.innerHTML = `<div class="ro-eq">${tex(`\\theta = \\frac{\\text{호의 길이}}{r} = \\frac{${num(th * r, 2)}}{${num(r, 1)}} = ${num(th, 2)}\\ \\text{rad} \\approx ${num((th * 180) / Math.PI, 1)}^\\circ`, true)}</div>
+          <div class="small muted">${fmt(th > 6.2 ? "한 바퀴: 호의 길이가 둘레 $2\\pi r$ 이므로 $2\\pi$ 라디안 $=360°$." : Math.abs(th - Math.PI) < 0.05 ? "반 바퀴: $\\pi$ 라디안 $=180°$." : "각은 '반지름 몇 개만큼의 호인가'로 잽니다. 반지름이 달라도 같은 각이면 같은 라디안.")}</div>`;
+      };
+      redraw.add(draw);
+      sr.on(draw); st.on(draw); draw();
+    },
+    // 단위원: 각 θ 의 동경이 원과 만나는 점 (cos θ, sin θ)
+    "unit-circle"(el, cfg) {
+      wgHead(el, cfg.title || "단위원 위의 점", "각을 돌려 보세요. 점 P 의 x 좌표가 $\\cos\\theta$, y 좌표가 $\\sin\\theta$ 입니다. 90° 를 넘어도, 음수여도 값이 생깁니다.");
+      const P = makePlot(el, { xmin: -1.5, xmax: 1.5, ymin: -1.3, ymax: 1.3, ratio: 0.87, xstep: 0.5, ystep: 0.5, xlabels: [-1, 1], ylabels: [-1, 1] });
+      const sd = slider(el, { label: "θ", min: -360, max: 720, step: 5, value: cfg.deg ?? 120, show: (v) => `${v}°` });
+      const box = readout(el);
+      const draw = () => {
+        const d = sd.get(), t = (d * Math.PI) / 180, x = Math.cos(t), y = Math.sin(t);
+        P.clear();
+        const c = P.ctx;
+        c.strokeStyle = cssVar("--muted"); c.lineWidth = 1.5; c.beginPath(); c.arc(P.X(0), P.Y(0), P.X(1) - P.X(0), 0, 7); c.stroke();
+        // 회전 방향 표시 (작은 호)
+        c.strokeStyle = cssVar("--warn"); c.lineWidth = 2; c.beginPath();
+        const rr = (P.X(0.25) - P.X(0));
+        c.arc(P.X(0), P.Y(0), rr, 0, -t, t > 0); c.stroke();
+        c.strokeStyle = cssVar("--accent"); c.lineWidth = 2.5; c.beginPath(); c.moveTo(P.X(0), P.Y(0)); c.lineTo(P.X(x), P.Y(y)); c.stroke();
+        c.save(); c.setLineDash([4, 4]); c.strokeStyle = cssVar("--good"); c.lineWidth = 2;
+        c.beginPath(); c.moveTo(P.X(x), P.Y(y)); c.lineTo(P.X(x), P.Y(0)); c.stroke();
+        c.strokeStyle = cssVar("--bad"); c.beginPath(); c.moveTo(P.X(x), P.Y(y)); c.lineTo(P.X(0), P.Y(y)); c.stroke(); c.restore();
+        P.dot(x, y, cssVar("--accent"), 6, "P");
+        P.dot(x, 0, cssVar("--good"), 4);
+        P.dot(0, y, cssVar("--bad"), 4);
+        const q = Math.abs(x) < 1e-9 || Math.abs(y) < 1e-9 ? "축 위" : x > 0 ? (y > 0 ? "제1사분면" : "제4사분면") : (y > 0 ? "제2사분면" : "제3사분면");
+        const tn = Math.abs(x) < 1e-9 ? "정의되지 않음" : num(y / x, 3);
+        const g = (x, y) => (y ? g(y, x % y) : Math.abs(x)), gg = g(d, 180) || 1, pn = d / gg, pd = 180 / gg;
+        const rad = pn === 0 ? "0" : `${pn < 0 ? "-" : ""}${pd === 1 ? (Math.abs(pn) === 1 ? "" : Math.abs(pn)) : `\\frac{${Math.abs(pn)}}{${pd}}`}\\pi`;
+        box.innerHTML = `<div>${tex(`\\theta = ${d}^\\circ = ${rad}`)} &nbsp;<span class="small muted">(${q}${Math.abs(d) >= 360 ? `, ${(((d % 360) + 360) % 360)}° 와 같은 위치` : ""})</span></div>
+          <div class="ro-eq">${tex(`\\cos\\theta = ${num(x, 3)},\\quad \\sin\\theta = ${num(y, 3)}`, true)}</div>
+          <div class="small">${tex("\\tan\\theta = \\frac{\\sin\\theta}{\\cos\\theta}")} = ${tn} &nbsp;·&nbsp; ${tex(`\\sin^2\\theta+\\cos^2\\theta = ${num(x * x + y * y, 3)}`)}</div>`;
+      };
+      redraw.add(draw);
+      sd.on(draw); draw();
+    },
+    // 원을 돌리면 사인 곡선이 그려진다 + y = a sin(bx) + c 변환
+    "trig-wave"(el, cfg) {
+      const mode = cfg.mode || "unroll";
+      wgHead(el, cfg.title || (mode === "unroll" ? "원을 펼치면 사인 곡선" : "$y=a\\sin bx + c$ 바꿔 보기"),
+        mode === "unroll" ? "각 θ 를 가로축으로, 점 P 의 높이(sin θ)를 세로축으로 옮겨 적으면 사인 곡선이 됩니다." : "a 는 높이(진폭), b 는 빠르기(주기), c 는 위아래 위치를 바꿉니다. 회색 곡선은 $y=\\sin x$.");
+      const P = makePlot(el, { xmin: -0.3, xmax: 2 * Math.PI + 0.3, ymin: mode === "unroll" ? -1.4 : -3.4, ymax: mode === "unroll" ? 1.4 : 3.4, ratio: 0.55, xstep: Math.PI / 2, ystep: 1, ylabels: mode === "unroll" ? [-1, 1] : [-3, -2, -1, 1, 2, 3] });
+      const lab = () => { const c = P.ctx; c.fillStyle = cssVar("--muted"); c.font = "11px Pretendard, sans-serif"; ["π/2", "π", "3π/2", "2π"].forEach((s, i) => c.fillText(s, P.X((i + 1) * Math.PI / 2) - 8, P.Y(0) + 13)); };
+      const box = readout(el);
+      let draw;
+      if (mode === "unroll") {
+        const fn = seg(el, [["sin", "$\\sin$"], ["cos", "$\\cos$"]], "sin");
+        const st = slider(el, { label: "θ", min: 0, max: 360, step: 5, value: 135, show: (v) => `${v}°` });
+        draw = () => {
+          const t = (st.get() * Math.PI) / 180, f = fn.get() === "sin" ? Math.sin : Math.cos;
+          P.clear(); lab();
+          P.fn(f, cssVar("--line"), 2);
+          P.fn(f, cssVar("--accent"), 3, 0, t);
+          P.vline(t, cssVar("--muted"));
+          P.dot(t, f(t), cssVar("--bad"), 6);
+          box.innerHTML = `<div class="ro-eq">${tex(`\\${fn.get()}\\,${st.get()}^\\circ = ${num(f(t), 3)}`, true)}</div>
+            <div class="small muted">${fmt(fn.get() === "sin" ? "θ 가 360° ($2\\pi$) 를 넘으면 점 P 가 같은 자리를 다시 돌므로 그래프가 똑같이 반복됩니다. 이것이 주기 $2\\pi$." : "$\\cos$ 는 점 P 의 가로 위치. 사인 곡선을 왼쪽으로 $\\frac{\\pi}{2}$ 옮긴 모양입니다.")}</div>`;
+        };
+        fn.on(draw); st.on(draw);
+      } else {
+        const sa = slider(el, { label: "a", min: -3, max: 3, step: 0.5, value: 2 });
+        const sb = slider(el, { label: "b", min: 0.5, max: 4, step: 0.5, value: 2 });
+        const sc = slider(el, { label: "c", min: -2, max: 2, step: 0.5, value: 0 });
+        draw = () => {
+          const a = sa.get(), b = sb.get(), c0 = sc.get();
+          P.clear(); lab();
+          P.fn(Math.sin, cssVar("--line"), 2);
+          P.hline(c0, cssVar("--warn"));
+          P.fn((x) => a * Math.sin(b * x) + c0, cssVar("--accent"), 3);
+          box.innerHTML = `<div class="ro-eq">${tex(`y = ${a}\\sin ${b}x ${c0 ? (c0 > 0 ? `+${c0}` : c0) : ""}`, true)}</div>
+            <div>${tex(`\\text{최댓값 } ${num(Math.abs(a) + c0, 2)},\\ \\text{최솟값 } ${num(-Math.abs(a) + c0, 2)},\\ \\text{주기 } \\frac{2\\pi}{${b}}${b === 1 ? "" : ` = ${num(2 / b, 3)}\\pi`}`)}</div>
+            <div class="small muted">${fmt("b 가 2 배가 되면 한 번 출렁이는 데 걸리는 길이(주기)는 반이 됩니다. 각을 두 배 빨리 돌리는 셈이기 때문입니다.")}</div>`;
+        };
+        sa.on(draw); sb.on(draw); sc.on(draw);
+      }
+      redraw.add(draw);
+      draw();
+    },
+    // 삼각형과 외접원: 사인법칙 · 코사인법칙
+    "law-triangle"(el, cfg) {
+      wgHead(el, cfg.title || "삼각형과 외접원", "두 변 b, c 와 끼인각 A 를 정하면 삼각형이 하나로 정해집니다. 나머지 변 a 는 코사인법칙으로, 외접원은 사인법칙으로 구해 보세요.");
+      const cv = document.createElement("canvas"); cv.className = "plot"; el.appendChild(cv);
+      const sA = slider(el, { label: "각 A", min: 10, max: 170, step: 1, value: cfg.A || 60, show: (v) => `${v}°` });
+      const sb = slider(el, { label: "b", min: 1, max: 5, step: 0.1, value: 4, show: (v) => num(v, 1) });
+      const sc = slider(el, { label: "c", min: 1, max: 5, step: 0.1, value: 3, show: (v) => num(v, 1) });
+      const box = readout(el);
+      const draw = () => {
+        const w = Math.min(innerW(cv.parentElement) || 320, 640), h = Math.round(w * 0.8), dpr = window.devicePixelRatio || 1;
+        cv.width = w * dpr; cv.height = h * dpr; cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+        const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+        const A = (sA.get() * Math.PI) / 180, b = sb.get(), c = sc.get();
+        const a = Math.sqrt(b * b + c * c - 2 * b * c * Math.cos(A));
+        const R = a / (2 * Math.sin(A));
+        // 좌표: A 원점, B = (c, 0), C = (b cos A, b sin A)
+        const pts = { A: [0, 0], B: [c, 0], C: [b * Math.cos(A), b * Math.sin(A)] };
+        // 외심: AB 의 수직이등분선 x = c/2 위
+        const ox = c / 2, oy = (b - c * Math.cos(A)) / (2 * Math.sin(A));
+        const minx = Math.min(ox - R, 0), maxx = Math.max(ox + R, c), miny = Math.min(oy - R, 0), maxy = Math.max(oy + R, pts.C[1]);
+        const s = Math.min((w - 24) / (maxx - minx), (h - 24) / (maxy - miny));
+        const X = (x) => 12 + (x - minx) * s, Y = (y) => h - 12 - (y - miny) * s;
+        g.strokeStyle = cssVar("--line"); g.lineWidth = 1.5; g.beginPath(); g.arc(X(ox), Y(oy), R * s, 0, 7); g.stroke();
+        g.fillStyle = cssVar("--accent-soft"); g.strokeStyle = cssVar("--accent"); g.lineWidth = 2;
+        g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(c), Y(0)); g.lineTo(X(pts.C[0]), Y(pts.C[1])); g.closePath(); g.fill(); g.stroke();
+        g.strokeStyle = cssVar("--muted"); g.setLineDash([4, 4]); g.lineWidth = 1.2; g.beginPath(); g.moveTo(X(ox), Y(oy)); g.lineTo(X(c), Y(0)); g.stroke(); g.setLineDash([]);
+        g.fillStyle = cssVar("--muted"); g.beginPath(); g.arc(X(ox), Y(oy), 3, 0, 7); g.fill();
+        g.fillStyle = cssVar("--text"); g.font = "600 13px Pretendard, sans-serif";
+        g.fillText("A", X(0) - 12, Y(0) + 4); g.fillText("B", X(c) + 4, Y(0) + 4); g.fillText("C", X(pts.C[0]) + 4, Y(pts.C[1]) - 4);
+        g.fillStyle = cssVar("--bad"); g.fillText("a", (X(c) + X(pts.C[0])) / 2 + 6, (Y(0) + Y(pts.C[1])) / 2);
+        g.fillStyle = cssVar("--muted"); g.font = "12px Pretendard, sans-serif"; g.fillText("R", (X(ox) + X(c)) / 2 + 3, (Y(oy) + Y(0)) / 2);
+        box.innerHTML = `<div class="ro-eq">${tex(`\\begin{gathered}a^2 = b^2+c^2-2bc\\cos A = ${num(b * b + c * c, 2)} - ${num(2 * b * c * Math.cos(A), 2)} \\\\ a \\approx ${num(a, 3)}, \\qquad \\frac{a}{\\sin A} = ${num(a / Math.sin(A), 3)} = 2R\\end{gathered}`, true)}</div>
+          <div class="small muted">${fmt(Math.abs(sA.get() - 90) < 1 ? "A = 90° 이면 $\\cos A = 0$ 이라 $a^2=b^2+c^2$: 피타고라스 정리로 돌아갑니다. 빗변 a 가 외접원의 지름이 됩니다." : sA.get() > 90 ? "A 가 둔각이면 $\\cos A<0$ 이라 $-2bc\\cos A$ 가 더해져서, a 가 피타고라스 때보다 길어집니다." : "A 가 예각이면 $\\cos A>0$ 이라 피타고라스 때보다 a 가 짧아집니다.")}</div>`;
+      };
+      redraw.add(draw);
+      sA.on(draw); sb.on(draw); sc.on(draw); draw();
+    },
+    // 등차 · 등비수열을 막대로: 더하기 vs 곱하기
+    "seq-bars"(el, cfg) {
+      wgHead(el, cfg.title || "더해 가기 vs 곱해 가기", "첫째항과 공차(공비)를 바꿔 보세요. 등차수열의 막대 끝은 직선 위에, 등비수열의 막대 끝은 지수함수 곡선 위에 놓입니다.");
+      const kind = seg(el, [["a", "등차수열"], ["g", "등비수열"]], cfg.kind || "a");
+      const cv = document.createElement("canvas"); cv.className = "plot"; el.appendChild(cv);
+      const s1 = slider(el, { label: "첫째항", min: -5, max: 10, step: 1, value: 2 });
+      const sd = slider(el, { label: "공차 d", min: -3, max: 5, step: 0.5, value: 2, show: (v) => num(v, 1) });
+      const sr = slider(el, { label: "공비 r", min: -2, max: 2, step: 0.1, value: 1.5, show: (v) => num(v, 1) });
+      const box = readout(el);
+      const draw = () => {
+        const k = kind.get(), a1 = s1.get(), d = sd.get(), r = sr.get();
+        sd.row = sd.row || el.querySelectorAll(".sl")[1]; sr.row = sr.row || el.querySelectorAll(".sl")[2];
+        sd.row.hidden = k !== "a"; sr.row.hidden = k !== "g";
+        const N = 10, vals = Array.from({ length: N }, (_, i) => (k === "a" ? a1 + i * d : a1 * r ** i));
+        const w = Math.min(innerW(cv.parentElement) || 320, 640), h = Math.round(w * 0.6), dpr = window.devicePixelRatio || 1;
+        cv.width = w * dpr; cv.height = h * dpr; cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+        const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+        const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals, 1);
+        const Y = (v) => h - 18 - ((v - lo) / (hi - lo || 1)) * (h - 30), bw = (w - 20) / N;
+        c.strokeStyle = cssVar("--muted"); c.beginPath(); c.moveTo(10, Y(0)); c.lineTo(w - 10, Y(0)); c.stroke();
+        vals.forEach((v, i) => {
+          c.fillStyle = v >= 0 ? cssVar("--accent") : cssVar("--bad");
+          const x = 10 + i * bw + 3;
+          c.fillRect(x, Math.min(Y(v), Y(0)), bw - 6, Math.abs(Y(v) - Y(0)));
+          c.fillStyle = cssVar("--muted"); c.font = "10px Pretendard, sans-serif"; c.fillText(String(i + 1), x + bw / 2 - 6, h - 4);
+        });
+        const show = vals.slice(0, 6).map((v) => num(v, 2)).join(",\\ ");
+        const gen = k === "a" ? `a_n = ${a1} + (n-1)\\cdot ${num(d, 1)}` : `a_n = ${a1}\\cdot (${num(r, 1)})^{n-1}`;
+        box.innerHTML = `<div class="ro-eq">${tex(`${show},\\ \\cdots`, true)}</div><div>${tex(gen)} &nbsp; ${tex(`a_{10} = ${num(vals[9], 3)}`)}</div>
+          <div class="small muted">${fmt(k === "a" ? "이웃한 막대의 차가 늘 $d$. 막대 끝이 한 직선(기울기 $d$) 위에 놓입니다." : r < 0 ? "공비가 음수면 부호가 번갈아 바뀝니다." : Math.abs(r) < 1 ? "$|r|<1$ 이면 막대가 점점 0 으로 줄어듭니다." : "이웃한 막대의 비가 늘 $r$. 곱하기라서 금방 커집니다.")}</div>`;
+      };
+      redraw.add(draw);
+      kind.on(draw); s1.on(draw); sd.on(draw); sr.on(draw); draw();
+    },
+    // 가우스의 짝짓기: 1+2+…+n 을 거꾸로 한 번 더 놓으면 직사각형
+    "gauss-pair"(el, cfg) {
+      wgHead(el, cfg.title || "거꾸로 한 번 더 쌓기", "1부터 n 까지의 계단(파랑) 위에 같은 계단을 거꾸로(초록) 얹으면 가로 n, 세로 n+1 인 직사각형이 됩니다.");
+      const cv = document.createElement("canvas"); cv.className = "plot"; el.appendChild(cv);
+      const sn = slider(el, { label: "n", min: 2, max: 20, step: 1, value: cfg.n || 6 });
+      const box = readout(el);
+      const draw = () => {
+        const n = sn.get();
+        const w = Math.min(innerW(cv.parentElement) || 320, 640), h = Math.round(w * 0.6), dpr = window.devicePixelRatio || 1;
+        cv.width = w * dpr; cv.height = h * dpr; cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+        const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+        const s = Math.min((w - 20) / n, (h - 20) / (n + 1)), ox = (w - s * n) / 2, oy = h - 10;
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n + 1; j++) {
+            c.fillStyle = j < i + 1 ? cssVar("--accent") : cssVar("--good");
+            c.globalAlpha = j < i + 1 ? 0.85 : 0.55;
+            c.fillRect(ox + i * s + 1, oy - (j + 1) * s + 1, s - 2, s - 2);
+          }
+        }
+        c.globalAlpha = 1;
+        box.innerHTML = `<div class="ro-eq">${tex(`1+2+\\cdots+${n} = \\frac{${n}\\times${n + 1}}{2} = ${(n * (n + 1)) / 2}`, true)}</div>
+          <div class="small muted">각 세로줄에는 파랑 $k$ 개와 초록 $n+1-k$ 개, 합쳐서 늘 $n+1$ 개. 그런 줄이 $n$ 개이고 우리가 원한 것은 그 절반입니다.</div>`;
+        box.querySelector(".small").innerHTML = fmt(box.querySelector(".small").textContent);
+      };
+      redraw.add(draw);
+      sn.on(draw); draw();
+    },
+    // Σ 를 펼쳐 보기
+    "sigma-expand"(el, cfg) {
+      wgHead(el, cfg.title || "Σ 펼쳐 보기", "k 에 1, 2, 3, … 을 차례로 넣어 더하는 것이 Σ 입니다. 일반항과 n 을 바꿔 보세요.");
+      const terms = { k: ["k", (k) => k, (n) => (n * (n + 1)) / 2, "\\frac{n(n+1)}{2}"], k2: ["k^2", (k) => k * k, (n) => (n * (n + 1) * (2 * n + 1)) / 6, "\\frac{n(n+1)(2n+1)}{6}"],
+        odd: ["2k-1", (k) => 2 * k - 1, (n) => n * n, "n^2"], c: ["3", () => 3, (n) => 3 * n, "3n"], p2: ["2^k", (k) => 2 ** k, (n) => 2 ** (n + 1) - 2, "2^{n+1}-2"] };
+      const tsel = seg(el, Object.entries(terms).map(([key, t]) => [key, `$${t[0]}$`]), cfg.term || "k");
+      const sn = slider(el, { label: "n", min: 1, max: 12, step: 1, value: 5 });
+      const box = readout(el);
+      const draw = () => {
+        const [lab, f, closed, form] = terms[tsel.get()], n = sn.get();
+        const list = Array.from({ length: n }, (_, i) => f(i + 1));
+        const shown = n <= 6 ? list.join(" + ") : `${list.slice(0, 3).join(" + ")} + \\cdots + ${list[n - 1]}`;
+        const sum = list.reduce((a, b) => a + b, 0);
+        box.innerHTML = `<div class="ro-eq">${tex(`\\begin{gathered}\\sum_{k=1}^{${n}} ${lab} = ${shown} = ${sum} \\\\ \\text{공식 } ${form} \\text{ 에 } n=${n} \\text{ 을 넣으면 } ${closed(n)}\\end{gathered}`, true)}</div>
+          <div class="small muted">${fmt(tsel.get() === "c" ? "$k$ 가 식에 없어도 $n$ 번 더합니다: $\\sum_{k=1}^{n}3 = 3n$ ($3$ 이 아니다)." : tsel.get() === "odd" ? "홀수를 1 부터 n 개 더하면 정사각형 수 $n^2$. 바둑돌을 ㄱ 자로 감싸 가며 쌓아 보면 보입니다." : "$k$ 는 1 부터 n 까지 차례로 바뀌는 자리 표시일 뿐, 다른 문자($i$, $j$)를 써도 같습니다.")}</div>`;
+      };
+      tsel.on(draw); sn.on(draw); draw();
+    },
+    // 도미노: 첫 번째가 넘어지고, k 번째가 넘어지면 k+1 번째도 넘어진다
+    "domino"(el, cfg) {
+      wgHead(el, cfg.title || "도미노로 보는 수학적 귀납법", "두 조건을 켜고 끄며 '넘어뜨리기'를 눌러 보세요. 둘 다 있어야만 모든 도미노가 넘어집니다.");
+      const opt = document.createElement("div"); opt.className = "seg";
+      opt.innerHTML = `<label class="chk"><input type="checkbox" id="dm1" checked> ① 첫 번째가 넘어진다 (n=1)</label>
+        <label class="chk"><input type="checkbox" id="dm2" checked> ② k 번째가 넘어지면 k+1 번째도 넘어진다</label>
+        <label class="chk"><input type="checkbox" id="dm3"> (②가 꺼졌을 때) 7번과 8번 사이가 너무 멀다</label>`;
+      el.appendChild(opt);
+      const cv = document.createElement("canvas"); cv.className = "plot"; el.appendChild(cv);
+      const btn = document.createElement("button"); btn.type = "button"; btn.className = "btn small"; btn.textContent = "넘어뜨리기"; el.appendChild(btn);
+      const box = readout(el);
+      const N = 12;
+      let fallen = 0, timer = null;
+      const paint = () => {
+        const w = Math.min(innerW(cv.parentElement) || 320, 640), h = 110, dpr = window.devicePixelRatio || 1;
+        cv.width = w * dpr; cv.height = h * dpr; cv.style.width = `${w}px`; cv.style.height = `${h}px`;
+        const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, h);
+        const gap = (w - 30) / N, bh = 60, base = h - 22;
+        c.strokeStyle = cssVar("--muted"); c.beginPath(); c.moveTo(0, base); c.lineTo(w, base); c.stroke();
+        for (let i = 0; i < N; i++) {
+          const x = 15 + i * gap + (i >= 7 && $("#dm3", el).checked && !$("#dm2", el).checked ? 14 : 0);
+          c.save(); c.translate(x, base); c.rotate(i < fallen ? Math.PI / 2.6 : 0);
+          c.fillStyle = i < fallen ? cssVar("--good") : cssVar("--accent"); c.fillRect(-4, -bh, 8, bh); c.restore();
+          c.fillStyle = cssVar("--muted"); c.font = "10px Pretendard, sans-serif"; c.fillText(String(i + 1), x - 4, h - 6);
+        }
+      };
+      const run = () => {
+        clearInterval(timer); fallen = 0; paint();
+        const a = $("#dm1", el).checked, b = $("#dm2", el).checked;
+        if (!a) { box.innerHTML = fmt("①이 없으면 아무것도 시작되지 않습니다. '$k$ 번째가 넘어지면 다음도 넘어진다'는 말은 참이어도, 첫 도미노가 서 있으면 아무 일도 없습니다."); return; }
+        const stop = b ? N : $("#dm3", el).checked ? 7 : 1;
+        timer = setInterval(() => {
+          fallen += 1; paint();
+          if (fallen >= stop) {
+            clearInterval(timer);
+            box.innerHTML = fmt(b ? "①과 ②가 모두 성립하면 1번 → 2번 → 3번 → … 끝없이 넘어집니다. '모든 자연수 $n$ 에 대해 성립'이 이것입니다."
+              : stop === 7 ? "②가 어느 한 곳(7→8)에서라도 깨지면 거기서 멈춥니다. 그래서 ②는 '아무 $k$ 에 대해서나' 증명해야 합니다." : "②가 없으면 첫 번째만 넘어지고 끝날 수 있습니다. 몇 개 확인해 본 것은 증명이 아닙니다.");
+          }
+        }, 180);
+      };
+      btn.addEventListener("click", run);
+      el.querySelectorAll("input").forEach((x) => x.addEventListener("change", () => { clearInterval(timer); fallen = 0; paint(); box.textContent = "조건을 정하고 '넘어뜨리기'를 누르세요."; }));
+      redraw.add(paint);
+      paint(); box.textContent = "조건을 정하고 '넘어뜨리기'를 누르세요.";
+    },
   };
+
+  // ---------- 중학 준비 단계 카드 ----------
+  async function renderPrep(id) {
+    const idx = await loadIndex();
+    const cards = (await loadPrep()).cards || [];
+    const c = cards.find((x) => x.id === id);
+    if (!c) throw new Error(`준비 카드 없음: ${id}`);
+    redraw.clear();
+    const ch = idx.chapters.find((x) => x.id === c.chapter);
+    const same = cards.filter((x) => x.chapter === c.chapter);
+    const k = same.indexOf(c);
+    const units = allUnits(idx);
+    view.innerHTML = `
+      <a class="crumb" href="#/">← 전체 단원</a>
+      <div class="cat-top"><div class="muted small">${esc(ch?.no || "")}. ${esc(ch?.title || "")} · 준비 단계 ${k + 1}/${same.length}</div>
+        <h2>${esc(c.title)} <span class="pill gray">${esc(c.grade || "")}</span></h2>
+        <div class="one-line">${fmt(c.oneLine)}</div></div>
+      <article class="card sec root">
+        <div class="note-head"><span class="pill">핵심 한 장</span></div>
+        <div class="body">${paras(c.core)}</div>
+        ${c.formula ? `<div class="formula">${fmt(c.formula)}</div>` : ""}
+        ${c.widget && feat("interactive") ? `<div class="wg" data-wg="${esc(c.widget.type)}" data-cfg="${esc(JSON.stringify(c.widget))}"></div>` : ""}
+        ${c.table ? tableHtml(c.table) : ""}
+        ${c.after?.length ? `<div class="body">${paras(c.after)}</div>` : ""}
+      </article>
+      <article class="card sec">
+        <div class="note-head"><span class="pill">⏱ 3분 확인</span><button type="button" class="linkish" data-open-all>모두 보기</button></div>
+        <ol class="drill">${(c.check || []).map((d) => `<li><button type="button" class="drill-q">${fmt(d.q)}</button><span class="drill-a" hidden>${fmt(d.a)}</span></li>`).join("")}</ol>
+      </article>
+      <article class="card sec grows">
+        <div class="note-head"><span class="pill good">수학Ⅰ에서 이렇게 커진다</span></div>
+        <div class="body">${paras(c.grows)}</div>
+        <div class="q-actions">${(c.units || []).map((uid) => { const u = units.find((x) => x.id === uid); return u ? (u.status === "ready" ? `<a class="btn small" href="#/u/${esc(uid)}">${esc(u.title)} →</a>` : `<span class="pill gray">${esc(u.title)} (준비 중)</span>`) : ""; }).join("")}</div>
+        ${rateBar(c.id, c.id)}
+      </article>
+      <div class="pager">
+        ${k > 0 ? `<a class="btn ghost" href="#/p/${esc(same[k - 1].id)}">← ${esc(same[k - 1].title)}</a>` : "<span></span>"}
+        ${k < same.length - 1 ? `<a class="btn" href="#/p/${esc(same[k + 1].id)}">${esc(same[k + 1].title)} →</a>` : (() => { const u = units.find((x) => x.id === (c.units || [])[0]); return u && u.status === "ready" ? `<a class="btn" href="#/u/${esc(u.id)}">${esc(u.title)} 시작 →</a>` : `<a class="btn" href="#/">전체 단원으로</a>`; })()}
+      </div>`;
+    view.querySelectorAll(".wg").forEach((el) => {
+      const fn = WIDGETS[el.dataset.wg];
+      if (fn) { try { fn(el, JSON.parse(el.dataset.cfg)); } catch (e) { el.textContent = `그래프 오류: ${e.message}`; } }
+    });
+    const all = view.querySelector("[data-open-all]");
+    const check = () => { if (![...view.querySelectorAll(".drill-a")].some((a) => a.hidden)) prepSeen.put(c.id); };
+    all.addEventListener("click", () => {
+      view.querySelectorAll(".drill-a").forEach((a) => { a.hidden = false; });
+      view.querySelectorAll(".drill-q").forEach((q) => q.classList.add("open"));
+      check();
+    });
+    view.querySelectorAll(".drill-q").forEach((q) => q.addEventListener("click", () => setTimeout(check, 0)));
+  }
 
   // ---------- 질문하기 ----------
   function renderAsk(params) {
@@ -738,6 +1184,7 @@
       const idx = await loadIndex();
       $("#builtAt").textContent = idx.updated ? `내용 업데이트 ${idx.updated}` : "";
       if (parts[0] === "u" && parts[1]) await renderUnit(parts[1], parts[2] || "why");
+      else if (parts[0] === "p" && parts[1]) await renderPrep(parts[1]);
       else if (parts[0] === "ask") renderAsk(new URLSearchParams(qs || ""));
       else await renderHome(idx);
     } catch (err) {
@@ -750,6 +1197,7 @@
   let started = false;
   function start() {
     window.SITE_CONFIG = bundle ? bundle.config : window.SITE_CONFIG;
+    prep = null;
     $("#lock").hidden = true;
     $("#app").hidden = false;
     $("#lockBtn").hidden = !enc;
