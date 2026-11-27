@@ -339,3 +339,13 @@ canvas.plot { max-width: 100%; }
   .mdisp .katex-display > .katex, .formula .katex-display > .katex { font-size: .97em; }
   .ro-eq .katex-display { font-size: .86em; }
 }
+/* 밑 칸 + 지수 칸 */
+.pbox { display: flex; align-items: flex-end; gap: 6px; font-size: 26px; font-weight: 700; padding: 10px 0 4px; flex-wrap: wrap; }
+.pb-out { color: var(--bad); padding-bottom: 4px; }
+.pb-unit { display: inline-flex; align-items: flex-start; border: 2px solid var(--accent); border-radius: 10px; padding: 4px 6px; background: var(--accent-soft); }
+.pb-base { border: 2px dashed var(--accent); border-radius: 6px; padding: 2px 8px; color: var(--accent); background: var(--card); }
+.pb-exp { border: 2px dashed var(--good); border-radius: 6px; padding: 0 6px; font-size: 16px; margin-left: 3px; margin-top: -8px; color: var(--good); background: var(--card); }
+.pb-eq { padding-bottom: 4px; }
+.pb-legend { display: flex; gap: 8px; flex-wrap: wrap; }
+.pb-k { padding: 0 8px; border-radius: 6px; border: 1px dashed; }
+.pb-k.base { color: var(--accent); } .pb-k.exp { color: var(--good); } .pb-k.out { color: var(--bad); border-style: solid; }

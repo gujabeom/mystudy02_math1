@@ -1089,6 +1089,31 @@
       redraw.add(paint);
       paint(); box.textContent = "조건을 정하고 '넘어뜨리기'를 누르세요.";
     },
+    // 밑 칸 + 지수 칸 = 한 덩어리. 그 밖의 부호·계수는 덩어리 바깥에 붙는다
+    "power-box"(el, cfg) {
+      wgHead(el, cfg.title || "밑 칸과 지수 칸", "계산기나 수식 입력기의 $\\square^{\\square}$ 틀처럼, 밑과 지수는 한 덩어리입니다. 식을 골라 어느 것이 밑 칸에 들어가는지 보세요.");
+      const items = {
+        a: { label: "$-2^4$", out: "−", base: "2", exp: "4", value: -16, note: "밑 칸에는 2만 들어 있습니다. 덩어리 $2^4=16$ 을 먼저 만들고, 바깥의 마이너스를 붙여 $-16$." },
+        b: { label: "$(-2)^4$", out: "", base: "(−2)", exp: "4", value: 16, note: "괄호가 −2 를 통째로 밑 칸에 넣었습니다. $(-2)\\times(-2)\\times(-2)\\times(-2)=16$." },
+        c: { label: "$-(2^4)$", out: "−", base: "2", exp: "4", value: -16, note: "$-2^4$ 와 같은 식입니다. 괄호를 쓰지 않아도 원래 이렇게 읽습니다." },
+        d: { label: "$(-2)^3$", out: "", base: "(−2)", exp: "3", value: -8, note: "음수를 홀수 번 곱하면 음수. 밑이 −2 여도 결과는 $-8$." },
+        e: { label: "$3\\cdot2^4$", out: "3 ×", base: "2", exp: "4", value: 48, note: "계수 3 도 덩어리 바깥입니다. $2^4=16$ 을 먼저, 그다음 ×3. $6^4$ 이 아닙니다." },
+        f: { label: "$-x^2$ ($x=-3$)", out: "−", base: "(−3)", exp: "2", value: -9, note: "문자에 음수를 대입할 때는 괄호째 밑 칸에: $-(-3)^2=-9$. 밑 칸 바깥의 마이너스는 그대로 남습니다." },
+      };
+      const pick = seg(el, Object.entries(items).map(([k, v]) => [k, v.label]), cfg.pick || "a");
+      const box = readout(el);
+      const draw = () => {
+        const it = items[pick.get()];
+        box.innerHTML = `<div class="pbox">
+            ${it.out ? `<span class="pb-out">${esc(it.out)}</span>` : ""}
+            <span class="pb-unit"><span class="pb-base">${esc(it.base)}</span><span class="pb-exp">${esc(it.exp)}</span></span>
+            <span class="pb-eq">= ${it.value}</span>
+          </div>
+          <div class="pb-legend small"><span class="pb-k base">밑 칸</span> <span class="pb-k exp">지수 칸</span> <span class="pb-k out">덩어리 바깥</span></div>
+          <div class="small" style="margin-top:6px">${fmt(it.note)}</div>`;
+      };
+      pick.on(draw); draw();
+    },
   };
 
   // ---------- 중학 준비 단계 카드 ----------
