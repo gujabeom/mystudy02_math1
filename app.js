@@ -59,7 +59,12 @@
       if (!bundle.units[id]) throw new Error(`단원 없음: ${id}`);
       return bundle.units[id];
     }
-    if (!unitCache.has(id)) unitCache.set(id, await getJSON(`data/units/${encodeURIComponent(id)}.json`));
+    if (!unitCache.has(id)) {
+      const u = await getJSON(`data/units/${encodeURIComponent(id)}.json`);
+      const fast = await getJSON(`data/fast/${encodeURIComponent(id)}.json`).catch(() => null);
+      if (fast) u.fast = fast;
+      unitCache.set(id, u);
+    }
     return unitCache.get(id);
   }
   // 중학 준비 단계 카드 (data/prep.json)
@@ -181,6 +186,12 @@
       u.explainIds = (full.explain || []).map((e) => e.id);
     }
     const pc = (await loadPrep()).cards || [];
+    let due = 0;
+    if (feat("fastTrack")) {
+      const all = [];
+      for (const u of ready) all.push(...srCards((await loadUnit(u.id)).fast));
+      due = reviewQueue(all).length;
+    }
     view.innerHTML = `
       <section class="hero">
         <h2 style="margin:0">수학Ⅰ 개념 노트</h2>
@@ -191,6 +202,7 @@
         <ol class="flow">${TABS.map((t) => `<li>${t.icon} ${esc(t.label)}</li>`).join("")}</ol>
         <span class="muted">마지막에 '설명해 보기'에서 친구에게 설명하듯 적어 보고, 모범 설명과 비교합니다.</span>
       </div>
+      ${due ? `<a class="card review-cta" href="#/review"><b>⚡ 오늘의 즉시 떠올리기 ${due}장</b><span class="small muted">복습할 차례인 카드 + 새 카드 ${NEW_PER_DAY}장. 하루 5분.</span></a>` : ""}
       ${idx.chapters.map((ch) => `<div class="group-title">${esc(ch.no)}. ${esc(ch.title)}</div>
         ${prepRow(pc.filter((c) => c.chapter === ch.id))}
         <div class="cat-list">${ch.units.map((x) => unitRow(units.find((u) => u.id === x.id))).join("")}</div>`).join("")}`;
@@ -223,8 +235,9 @@
     { id: "pitfalls", label: "자주 흔들리는 지점", short: "함정", icon: "⚠️" },
     { id: "explain", label: "설명해 보기", short: "설명", icon: "🗣️" },
     { id: "map", label: "개념 지도", short: "지도", icon: "🗺️" },
+    { id: "fast", label: "빠른 풀이", short: "빠른 풀이", icon: "⚡", feat: "fastTrack" },
   ];
-  const tabsFor = (u) => TABS.filter((t) => (t.id !== "history" || u.history) && (!t.feat || feat(t.feat)));
+  const tabsFor = (u) => TABS.filter((t) => (t.id !== "history" || u.history) && (t.id !== "fast" || u.fast) && (!t.feat || feat(t.feat)));
 
   async function renderUnit(id, tab) {
     const idx = await loadIndex();
@@ -254,7 +267,7 @@
       const pcs = ((await loadPrep()).cards || []).filter((c) => (c.units || []).includes(id));
       if (pcs.length) body.insertAdjacentHTML("beforebegin", `<div class="prep-hint small">🧩 먼저 확인할 중학 개념: ${pcs.map((c) => `<a href="#/p/${esc(c.id)}">${esc(c.title)}</a>`).join(" · ")}</div>`);
     }
-    ({ why: tabWhy, history: tabHistory, uses: tabUses, roots: tabRoots, pitfalls: tabPitfalls, explain: tabExplain, map: tabMap })[tab](u, body);
+    ({ why: tabWhy, history: tabHistory, uses: tabUses, roots: tabRoots, pitfalls: tabPitfalls, explain: tabExplain, map: tabMap, fast: tabFast })[tab](u, body);
   }
   function nextUnitBtn(units, id) {
     const i = units.findIndex((x) => x.id === id);
@@ -406,6 +419,176 @@
       info.classList.remove("muted");
       info.innerHTML = `<b>${fmt(n.label)}</b> <span class="pill ${n.kind === "core" ? "" : "gray"}">${kinds[n.kind]}</span><div style="margin-top:6px">${fmt(n.desc || "")}</div>${root} ${pv} ${goto}`;
     }));
+  }
+
+  // ---------- 빠른 풀이 ----------
+  // 간격 반복 (라이트너 상자): 맞히면 다음 상자(1→2→4→7→15일 뒤), 틀리면 상자 0 (오늘 다시)
+  const SR_STORE = "math1.sr.v1";            // { 카드id: { box, due:"YYYY-MM-DD" } }
+  const TIMED_STORE = "math1.timed.v1";      // { 문제id: { ok, sec, tag, at, tries } }
+  const SR_DAYS = [0, 1, 2, 4, 7, 15];
+  const today = () => new Date().toISOString().slice(0, 10);
+  const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const jsonStore = (key) => {
+    let d = {};
+    try { d = JSON.parse(store.get(key) || "{}") || {}; } catch { d = {}; }
+    return { get: (id) => d[id], put(id, v) { d[id] = v; store.set(key, JSON.stringify(d)); }, all: () => d };
+  };
+  const sr = jsonStore(SR_STORE);
+  const timed = jsonStore(TIMED_STORE);
+  // 즉시 떠올리기 카드 = recall + 첫 수(cue → move)
+  const srCards = (f) => !f ? [] : [
+    ...(f.recall || []).map((c) => ({ id: c.id, q: c.q, a: c.a, kind: "공식" })),
+    ...(f.firstMoves || []).map((c) => ({ id: c.id, q: `이 조건이 보이면 첫 줄은? — ${c.cue}`, a: c.move, kind: "첫 수" })),
+  ];
+  const srDue = (f) => srCards(f).filter((c) => { const s0 = sr.get(c.id); return !s0 || s0.due <= today(); });
+  // 전체 복습은 하루에 새 카드를 NEW_PER_DAY 장까지만 섞는다 (첫날 수백 장이 쏟아지지 않게)
+  const NEW_PER_DAY = 15;
+  const reviewQueue = (cards) => {
+    const seen = cards.filter((c) => sr.get(c.id) && sr.get(c.id).due <= today());
+    const fresh = cards.filter((c) => !sr.get(c.id)).slice(0, NEW_PER_DAY);
+    return [...seen, ...fresh];
+  };
+  function srGrade(id, ok) {
+    const s0 = sr.get(id) || { box: 0 };
+    const box = ok ? Math.min((s0.box || 0) + 1, SR_DAYS.length - 1) : 0;
+    sr.put(id, { box, due: addDays(SR_DAYS[box]) });
+  }
+  // 카드 넘기기 화면 (단원 하나 또는 전체 복습)
+  function srDeck(el, cards, onDone) {
+    let k = 0, okN = 0;
+    const show = () => {
+      if (k >= cards.length) {
+        el.innerHTML = `<div class="card sr-done"><b>오늘 볼 카드를 다 봤습니다.</b><div class="small muted" style="margin-top:4px">${cards.length}장 중 ${okN}장 바로 떠올림. 모른 카드는 오늘 안에 다시 나옵니다.</div>
+          ${cards.length - okN ? `<button type="button" class="btn small" style="margin-top:10px" data-again>모른 카드 다시 보기</button>` : ""}</div>`;
+        const ag = el.querySelector("[data-again]");
+        if (ag) ag.addEventListener("click", () => srDeck(el, cards.filter((c) => sr.get(c.id)?.box === 0), onDone));
+        if (onDone) onDone();
+        return;
+      }
+      const c = cards[k];
+      el.innerHTML = `<div class="card sr-card">
+        <div class="q-meta"><span class="pill">${esc(c.kind)}</span>${c.unitTitle ? `<span class="pill gray">${esc(c.unitTitle)}</span>` : ""}<span class="small muted" style="margin-left:auto">${k + 1} / ${cards.length}</span></div>
+        <div class="sr-q">${fmt(c.q)}</div>
+        <button type="button" class="btn ghost" style="width:100%" data-flip>머릿속으로 떠올린 뒤 → 답 보기</button>
+        <div class="sr-a" hidden><div class="model">${fmt(c.a)}</div>
+          <div class="self"><button type="button" class="btn small" data-ok="1">바로 떠올랐다</button><button type="button" class="btn ghost small" data-ok="0">못 떠올렸다</button></div></div>
+      </div>`;
+      el.querySelector("[data-flip]").addEventListener("click", (e) => { e.target.remove(); el.querySelector(".sr-a").hidden = false; });
+      el.querySelectorAll("[data-ok]").forEach((b) => b.addEventListener("click", () => {
+        const ok = b.dataset.ok === "1"; if (ok) okN += 1;
+        srGrade(c.id, ok); k += 1; show();
+      }));
+    };
+    show();
+  }
+  const SLOW_TAGS = ["첫 수 막힘", "계산", "실수", "개념"];
+  const FAST_SUB = [["moves", "첫 수"], ["short", "지름길"], ["recall", "즉시 떠올리기"], ["timed", "시간 재기"]];
+  let fastSub = "moves", fastUnit = "";
+  function tabFast(u, body) {
+    const f = u.fast;
+    if (u.id !== fastUnit) { fastSub = "moves"; fastUnit = u.id; }
+    const dueN = srDue(f).length;
+    const tdone = (f.timed || []).filter((t) => timed.get(t.id)).length;
+    body.innerHTML = `<p class="small muted" style="margin:8px 0 0">개념을 다 이해한 다음, 시험 시간에 덜 헤매도록 정리한 곳입니다. 많이 푸는 대신 <b>첫 줄을 바로 떠올리는 것</b>을 목표로 합니다.</p>
+      <div class="seg fast-seg">${FAST_SUB.map(([k, l]) => `<button type="button" data-sub="${k}" class="${k === fastSub ? "on" : ""}">${l}${k === "recall" && dueN ? ` <span class="badge">${dueN}</span>` : ""}${k === "timed" ? ` <small>${tdone}/${(f.timed || []).length}</small>` : ""}</button>`).join("")}</div>
+      <div id="fastBody"></div>`;
+    body.querySelectorAll("[data-sub]").forEach((b) => b.addEventListener("click", () => { fastSub = b.dataset.sub; tabFast(u, body); }));
+    const fb = $("#fastBody", body);
+    if (fastSub === "moves") {
+      fb.innerHTML = `<p class="small muted">왼쪽 조건을 보고 첫 줄을 먼저 떠올린 뒤 눌러 확인하세요. 이 카드들은 '즉시 떠올리기'에도 섞여 나옵니다.</p>
+        <ol class="moves">${(f.firstMoves || []).map((m) => `<li class="card move">
+          <div class="mv-cue">${fmt(m.cue)}</div>
+          <button type="button" class="drill-q">첫 줄은?</button>
+          <div class="drill-a" hidden><div class="mv-move">→ ${fmt(m.move)}</div>${m.why ? `<div class="small muted">왜: ${fmt(m.why)}</div>` : ""}${m.ex ? `<div class="small mv-ex">예: ${fmt(m.ex)}</div>` : ""}</div>
+        </li>`).join("")}</ol>`;
+    } else if (fastSub === "short") {
+      fb.innerHTML = (f.shortcuts || []).map((c) => `<article class="card sec">
+          <div class="note-head"><span class="pill">지름길</span></div>
+          <h3>${fmt(c.title)}</h3>
+          <div class="body">${paras(c.how)}</div>
+          ${c.why ? `<div class="tip">🔎 왜 되나: ${fmt(c.why)}</div>` : ""}
+          ${c.ex ? `<div class="nsec"><div class="nlabel">예</div><div class="body">${paras(c.ex)}</div></div>` : ""}
+          ${c.warn ? `<div class="notice small" style="margin-top:10px">⚠️ ${fmt(c.warn)}</div>` : ""}
+          ${rateBar(u.id, c.id)}
+        </article>`).join("");
+    } else if (fastSub === "recall") {
+      const due = srDue(f);
+      fb.innerHTML = `<p class="small muted">맞히면 1일 → 2일 → 4일 → 7일 → 15일 간격으로 다시 나오고, 못 떠올리면 오늘 다시 나옵니다. 이 기기에만 저장됩니다.</p><div id="deck"></div>
+        <details class="more"><summary>카드 전체 목록 (${srCards(f).length}장)</summary><ul class="nlist" style="margin-top:8px">${srCards(f).map((c) => `<li>${fmt(c.q)} <span class="muted">→ ${fmt(c.a)}</span></li>`).join("")}</ul></details>`;
+      if (due.length) srDeck($("#deck", fb), due, null);
+      else $("#deck", fb).innerHTML = `<div class="card small">오늘 볼 카드가 없습니다. 다음 복습일에 다시 나옵니다. 🎉</div>`;
+    } else {
+      renderTimed(u, fb);
+    }
+  }
+  let tTimer = null;
+  function renderTimed(u, fb) {
+    const list = u.fast.timed || [];
+    const rows = list.map((t) => timed.get(t.id)).filter(Boolean);
+    const tags = {};
+    rows.forEach((r) => { if (r.tag) tags[r.tag] = (tags[r.tag] || 0) + 1; });
+    fb.innerHTML = `<p class="small muted">시작을 누르면 시간이 갑니다. 목표 시간 안에 첫 줄을 쓰고 답을 고르세요. 틀렸거나 느렸다면 이유를 하나 고르세요. 그 이유가 다음에 무엇을 연습할지 알려 줍니다.</p>
+      ${Object.keys(tags).length ? `<div class="card small"><b>내 느린 이유</b> ${Object.entries(tags).map(([k, v]) => `<span class="pill gray">${esc(k)} ${v}</span>`).join(" ")}
+        <div class="muted" style="margin-top:4px">${tags["첫 수 막힘"] ? "첫 수가 막힌다면 '첫 수' 카드를 즉시 떠올리기로 더 돌리세요. " : ""}${tags["개념"] ? "개념 때문이라면 '개념의 뿌리'와 '설명해 보기'로 돌아가세요. " : ""}${tags["계산"] || tags["실수"] ? "계산·실수는 '지름길'의 검산 방법(특수값 대입)을 써 보세요." : ""}</div></div>` : ""}
+      ${list.map((t, i) => {
+        const r = timed.get(t.id);
+        return `<article class="card tq" data-id="${esc(t.id)}">
+          <div class="q-meta"><span class="pill">문제 ${i + 1}</span><span class="pill gray">목표 ${t.sec}초</span>
+            ${r ? `<span class="pill ${r.ok ? "good" : "bad"}">${r.ok ? "맞음" : "틀림"} · ${r.sec}초${r.tag ? ` · ${esc(r.tag)}` : ""}</span>` : ""}
+            <span class="timer-s" hidden>0초</span></div>
+          <div class="q-text">${fmt(t.q)}</div>
+          <button type="button" class="btn small t-start">시작</button>
+          <div class="t-body" hidden>
+            <div class="choices">${t.choices.map((c, j) => `<button type="button" data-j="${j}"><span class="cn">${"①②③④⑤"[j]}</span><span>${fmt(c)}</span></button>`).join("")}</div>
+            <div class="explain" hidden></div>
+          </div>
+        </article>`;
+      }).join("")}`;
+    fb.querySelectorAll(".tq").forEach((card) => {
+      const t = list.find((x) => x.id === card.dataset.id);
+      const tm = $(".timer-s", card);
+      let t0 = 0;
+      $(".t-start", card).addEventListener("click", (e) => {
+        e.target.remove(); $(".t-body", card).hidden = false; tm.hidden = false;
+        clearInterval(tTimer); t0 = Date.now();
+        tTimer = setInterval(() => { const sec = Math.round((Date.now() - t0) / 1000); tm.textContent = `${sec}초`; tm.classList.toggle("over", sec > t.sec); }, 500);
+      });
+      card.querySelectorAll(".choices button").forEach((b) => b.addEventListener("click", () => {
+        clearInterval(tTimer);
+        const sec = Math.round((Date.now() - t0) / 1000), j = Number(b.dataset.j), ok = j === t.answer;
+        card.querySelectorAll(".choices button").forEach((x, xi) => { x.disabled = true; if (xi === t.answer) x.classList.add("correct"); });
+        if (!ok) b.classList.add("picked-wrong");
+        const prev = timed.get(t.id);
+        const rec = { ok, sec, tag: "", at: today(), tries: (prev?.tries || 0) + 1 };
+        timed.put(t.id, rec);
+        sendRating(u.id, t.id, "풀이", `${ok ? "정답" : "오답"}:${j + 1} (${sec}초/${t.sec}초)`);
+        const slow = !ok || sec > t.sec;
+        const ex = $(".explain", card);
+        ex.hidden = false;
+        ex.innerHTML = `<div class="verdict ${ok ? "ok" : "no"}">${ok ? "정답" : "오답"} · ${sec}초 ${sec > t.sec ? `(목표 ${t.sec}초 초과)` : `(목표 ${t.sec}초 안)`}</div>
+          ${t.move ? `<div class="small"><b>첫 줄</b> ${fmt(t.move)}</div>` : ""}
+          <div class="body">${paras(t.solution)}</div>
+          ${slow ? `<div class="nlabel" style="margin-top:10px">느렸거나 틀린 이유는?</div><div class="self">${SLOW_TAGS.map((g) => `<button type="button" class="btn ghost small" data-tag="${esc(g)}">${esc(g)}</button>`).join("")}</div>` : ""}`;
+        ex.querySelectorAll("[data-tag]").forEach((tb) => tb.addEventListener("click", () => {
+          timed.put(t.id, { ...rec, tag: tb.dataset.tag });
+          sendRating(u.id, t.id, "느린 이유", tb.dataset.tag);
+          ex.querySelectorAll("[data-tag]").forEach((x) => { x.classList.toggle("on", x === tb); x.classList.toggle("lv", true); });
+        }));
+      }));
+    });
+  }
+  async function renderReview() {
+    const idx = await loadIndex();
+    const cards = [];
+    for (const m of allUnits(idx).filter((x) => x.status === "ready")) {
+      const u = await loadUnit(m.id);
+      srCards(u.fast).forEach((c) => cards.push({ ...c, unitTitle: u.title }));
+    }
+    const q = reviewQueue(cards);
+    view.innerHTML = `<a class="crumb" href="#/">← 전체 단원</a><h2>⚡ 오늘의 즉시 떠올리기</h2>
+      <p class="small muted">복습할 차례가 된 카드와, 아직 안 본 새 카드 ${NEW_PER_DAY}장까지를 모았습니다. 하루 5분이면 충분합니다. 단원별로 몰아서 보려면 각 단원의 '빠른 풀이 → 즉시 떠올리기'를 쓰세요.</p><div id="deck"></div>`;
+    if (q.length) srDeck($("#deck"), q.sort(() => Math.random() - 0.5), null);
+    else $("#deck").innerHTML = `<div class="card small">오늘 볼 카드가 없습니다. 🎉</div>`;
   }
 
   // ---------- 인터랙티브 그래프 ----------
@@ -1210,6 +1393,7 @@
       $("#builtAt").textContent = idx.updated ? `내용 업데이트 ${idx.updated}` : "";
       if (parts[0] === "u" && parts[1]) await renderUnit(parts[1], parts[2] || "why");
       else if (parts[0] === "p" && parts[1]) await renderPrep(parts[1]);
+      else if (parts[0] === "review") await renderReview();
       else if (parts[0] === "ask") renderAsk(new URLSearchParams(qs || ""));
       else await renderHome(idx);
     } catch (err) {

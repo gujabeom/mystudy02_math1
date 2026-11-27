@@ -349,3 +349,21 @@ canvas.plot { max-width: 100%; }
 .pb-legend { display: flex; gap: 8px; flex-wrap: wrap; }
 .pb-k { padding: 0 8px; border-radius: 6px; border: 1px dashed; }
 .pb-k.base { color: var(--accent); } .pb-k.exp { color: var(--good); } .pb-k.out { color: var(--bad); border-style: solid; }
+/* 빠른 풀이 */
+.fast-seg { margin-top: 12px; }
+.fast-seg .badge { vertical-align: 1px; }
+.fast-seg small { color: var(--muted); font-size: 11px; }
+.moves { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; counter-reset: mv; }
+.move { margin: 0; padding: 12px 14px; }
+.mv-cue { font-weight: 600; margin-bottom: 8px; }
+.mv-cue::before { counter-increment: mv; content: counter(mv) ". "; color: var(--accent); }
+.mv-move { color: var(--good); font-weight: 700; margin-bottom: 4px; }
+.mv-ex { margin-top: 4px; }
+.move .drill-a { display: block; color: var(--text); font-weight: 400; padding: 8px 2px 0; }
+.move .drill-a[hidden] { display: none !important; }
+.sr-card .sr-q { font-size: 17px; font-weight: 600; margin: 8px 0 14px; line-height: 1.7; }
+.sr-card .sr-a .self { margin-top: 10px; }
+.review-cta { display: grid; gap: 2px; border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.timer-s { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 700; }
+.timer-s.over { color: var(--bad); }
+.tq .t-start { margin-top: 4px; }
